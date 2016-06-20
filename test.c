@@ -10,7 +10,7 @@
 #include <stdbool.h>
 #include <string.h>
 
-bool findSessionKey(FILE *fp, const char *session, const char *key, int *pos)
+bool findSessionKey(FILE *fp, const char *session, const char *key, char *oldValue, int oldValueSize, int *pos)
 {
 	bool foundSession = false;
 	bool foundKey = false;
@@ -19,7 +19,9 @@ bool findSessionKey(FILE *fp, const char *session, const char *key, int *pos)
 	char keyString[1024] = {0};
 	char valueString[1024] = {0};
 	char sessionString[1024]={0};
-	
+
+	snprintf(sessionString, 1024, "[%s]", session);
+
 	while(fgets(lineString, 1024, fp))
 	{
 		//注释行
@@ -51,6 +53,9 @@ bool findSessionKey(FILE *fp, const char *session, const char *key, int *pos)
 				foundKey = true;
 				fseek(fp, 0 - lineSize, SEEK_CUR);
 				*pos = ftell(fp);
+				int minSize = strlen(valueString) > oldValueSize ? oldValueSize : strlen(valueString);
+				strncpy(oldValue, valueString, minSize);
+				*(oldValue + minSize) = '\0';
 				break;
 			}
 		}
@@ -58,77 +63,36 @@ bool findSessionKey(FILE *fp, const char *session, const char *key, int *pos)
 
 	return foundKey == true ? true : false;
 }
+
 bool ReadPrivateProfileString(const char *fileName, const char *session, const char *key, char *value, const int len)
 {
+	bool result = false;
 	FILE *fp = NULL;
-	bool foundSession = false;
-	bool foundKey = false;
-	char lineString[1024] = {0};
-	char keyString[1024] = {0};
-	char valueString[1024] = {0};
-	char sessionString[1024]={0};
+	int pos = 0;
 
 	do
 	{
 		fp = fopen(fileName, "r");
 		if (NULL == fp)
 			break;
-		
-		snprintf(sessionString, 1024, "[%s]",session);
 
-		while(fgets(lineString, 1024, fp))
-		{
-			//注释行
-			if ('#' == lineString[0])
-				continue;
-			
-			//去掉行尾的'\n'
-			if('\n' == lineString[strlen(lineString)-1])
-				lineString[strlen(lineString)-1] = '\0';
-			
-			if (!foundSession)
-			{
-				if (0 == strcmp(lineString, sessionString))
-				{
-					foundSession = true;
-				}
-			}
-			else
-			{
-				//读到下一个session
-				if ('[' == lineString[0])
-					break;
-				
-				sscanf(lineString, "%[^=]=%s", keyString, valueString);
-				if (0 == strcmp(keyString, key))
-				{
-					foundKey = true;
-					int minLen = strlen(valueString) > len ? len : strlen(valueString);
-					strncpy(value, valueString, minLen);
-					*(value + minLen) = '\0';
-					break;
-				}
-			}
-		}
-
+		result = findSessionKey(fp, session, key, value, len, &pos);
 	} while(0);
 
 	fclose(fp);
-	return foundKey == true ? true : false;
+	return result;
 }
 
-bool WritePrivateProfileString(const char *fileName, const char *session, const char *key, const char *value)
+bool WritePrivateProfileString(const char *fileName, const char *session, const char *key, const char *newValue)
 {
+	bool result = false;
 	FILE *fp = NULL;
-	int lineLen = 0;
+	int pos = 0;
 	int fbSize = 0;
 	int fileSize = 0;
-	bool foundSession = false;
-	bool foundKey = false;
 	char lineString[1024] = {0};
-	char keyString[1024] = {0};
-	char valueString[1024] = {0};
-	char sessionString[1024]={0};
+	char oldValue[1024] = {0};
+	
 
 	do
 	{
@@ -141,73 +105,45 @@ bool WritePrivateProfileString(const char *fileName, const char *session, const 
 		fbSize = fileSize + 1;
 		rewind(fp);
 
-		snprintf(sessionString, 1024, "[%s]",session);
-
-		while(fgets(lineString, 1024, fp))
+		result = findSessionKey(fp, session, key, oldValue, 1024, &pos);
+		if (result)
 		{
-			//注释行
-			if ('#' == lineString[0])
-				continue;
-		
-			lineLen = strlen(lineString);
-
-			//去掉行尾的'\n'
-			if('\n' == lineString[strlen(lineString)-1])
-				lineString[strlen(lineString)-1] = '\0';
+			fbSize = fbSize + strlen(newValue) - strlen(oldValue);
+			char *fileBuffer = malloc(fbSize);
+			int bufferUsed = 0;
+			memset(fileBuffer, 0, fbSize);
+			fseek(fp, 0, SEEK_SET);
+			fread(fileBuffer, pos, 1, fp);
+			bufferUsed += pos;
+			//printf("before:\n%s\n", fileBuffer);
+			snprintf(fileBuffer+bufferUsed, fbSize - bufferUsed, "%s=%s\n", key, newValue);
+			bufferUsed = bufferUsed + strlen(key) + 2 + strlen(newValue);
+			//printf("current:\n%s\n", fileBuffer);		
 			
-			if (!foundSession)
-			{
-				if (0 == strcmp(lineString, sessionString))
-				{
-					foundSession = true;
-				}
-			}
-			else
-			{
-				//读到下一个session
-				if ('[' == lineString[0])
-					break;
+			//要修改的行原来的数据
+			fgets(lineString, 1024, fp);
+			
+			int curr = ftell(fp);
+			fread(fileBuffer + bufferUsed, fileSize - curr, 1, fp);
+			bufferUsed = bufferUsed + fileSize - curr;
+			//printf("end:\n%s\n", fileBuffer);
 				
-				sscanf(lineString, "%[^=]=%s", keyString, valueString);
-				if (0 == strcmp(keyString, key))
-				{
-					foundKey = true;
-					fbSize = fbSize + strlen(value) - strlen(valueString);
-					char *fileBuffer = malloc(fbSize);
-					memset(fileBuffer, 0, fbSize);
-					int curr = ftell(fp);
-					int used = 0;
-					fseek(fp, 0, SEEK_SET);
-					fread(fileBuffer, curr - lineLen, 1, fp);
-					used = curr - lineLen;
-					//printf("before:\n%s\n", fileBuffer);
-
-					snprintf(fileBuffer+used, fbSize - used, "%s=%s\n", key, value);
-					used = used + strlen(key) + 2 + strlen(value);
-					//printf("current:\n%s\n", fileBuffer);
-					
-					fseek(fp, curr, SEEK_SET);
-					fread(fileBuffer + used, fileSize - curr, 1, fp);
-					//printf("end:\n%s\n", fileBuffer);
-				
-					fp = freopen(fileName, "w", fp);
-					fputs(fileBuffer, fp);
-					break;
-				}
-			}
+			fp = freopen(fileName, "w", fp);
+			fputs(fileBuffer, fp);
+			free(fileBuffer);
 		}
 
 	} while(0);
 
 	fclose(fp);
-	return foundKey == true ? true : false;
+	return result;
 }
 
 int main(int argc, char **argv)
 {
 	const char *file = "./config.ini";
 	char value[1024] = "xxxxxxxxxxxxxxxxxxxxx";
-	char *valueNew = "x";
+	char *valueNew = "xxxxxxx";
 	if (ReadPrivateProfileString(file, "session2", "key3", value, 1024))
 		printf("value = %s\n", value);
 	
